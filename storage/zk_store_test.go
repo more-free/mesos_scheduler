@@ -21,6 +21,7 @@ func TestZkStorage(t *testing.T) {
 	err = zk.Open()
 	defer zk.Close()
 	assert.Equal(t, nil, err)
+	zk.DeleteAll()
 
 	post := &protocol.Post{
 		StartTime:    1000,
@@ -30,40 +31,47 @@ func TestZkStorage(t *testing.T) {
 		Cmd:          "post",
 	}
 
-	id, err := zk.Create(post)
+	id, err := zk.Post(post)
 	assert.Equal(t, nil, err)
 
 	post.Cmd = "update"
 	update := &protocol.Update{
-		id, post,
+		id.TaskId, post,
 	}
 	err = zk.Update(update)
 	assert.Equal(t, nil, err)
 
 	get := &protocol.Get{
-		TaskId: id,
+		TaskId: id.TaskId,
 	}
-	bytes, err := zk.Get(get)
-	assert.Equal(t, nil, err)
-
-	data, err := protocol.ToPost(bytes)
+	data, err := zk.Get(get)
 	assert.Equal(t, nil, err)
 	assert.Equal(t, "update", data.Cmd)
 
-	children, err := zk.GetAll()
+	datas, err := zk.GetAll()
 	assert.Equal(t, nil, err)
-	for _, id := range children {
-		get = &protocol.Get{id}
-		_, err = zk.Get(get)
-		assert.Equal(t, nil, err)
+	assert.Equal(t, 1, len(datas))
+
+	// create again
+	_, err = zk.Post(post)
+	assert.Equal(t, nil, err)
+	datas, err = zk.GetAll()
+	assert.Equal(t, nil, err)
+	assert.Equal(t, 2, len(datas))
+	for i := 0; i < len(datas); i++ {
+		assert.Equal(t, post, datas[i])
 	}
 
 	del := &protocol.Delete{
-		TaskId: id,
+		TaskId: id.TaskId,
 	}
 	err = zk.Delete(del)
 	assert.Equal(t, nil, err)
 
 	err = zk.DeleteAll()
 	assert.Equal(t, nil, err)
+
+	datas, err = zk.GetAll()
+	assert.Equal(t, nil, err)
+	assert.Equal(t, 0, len(datas))
 }

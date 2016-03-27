@@ -7,6 +7,7 @@ package storage
 // 2. don't always rely on leader to assign task to mesos
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/more-free/mesos_scheduler/protocol"
 	zkCli "github.com/samuel/go-zookeeper/zk"
@@ -17,11 +18,11 @@ import (
 )
 
 type Storage interface {
-	Get(data *protocol.Get) ([]byte, error)
-	GetAll() ([]string, error)
-	Update(data *protocol.Update) error
-	Create(data *protocol.Post) (string, error) // returns unique task id
-	Delete(data *protocol.Delete) error
+	Get(*protocol.Get) (*protocol.Post, error)
+	GetAll() ([]*protocol.Post, error)
+	Update(*protocol.Update) error
+	Post(*protocol.Post) (*protocol.Get, error) // create new and return unique task meta data for future query
+	Delete(*protocol.Delete) error
 	DeleteAll() error
 	Open() error
 	Close() error
@@ -79,18 +80,45 @@ func (zk *ZkStorage) Open() error {
 }
 
 func (zk *ZkStorage) Close() error {
+	err := zk.deleteDir(zk.conn, zk.rootDir)
+	if err != nil {
+		return err
+	}
 	zk.conn.Close()
 	return nil
 }
 
-func (zk *ZkStorage) Get(data *protocol.Get) ([]byte, error) {
-	bytes, _, err := zk.conn.Get(zk.getPath(data.TaskId))
-	return bytes, err
+func (zk *ZkStorage) Get(data *protocol.Get) (*protocol.Post, error) {
+	return zk.getById(data.TaskId)
 }
 
-func (zk *ZkStorage) GetAll() ([]string, error) {
+func (zk *ZkStorage) getById(id string) (*protocol.Post, error) {
+	bytes, _, err := zk.conn.Get(zk.getPath(id))
+	if err != nil {
+		return nil, err
+	}
+	var post protocol.Post
+	err = json.Unmarshal(bytes, &post)
+	if err != nil {
+		return nil, err
+	}
+	return &post, nil
+}
+
+func (zk *ZkStorage) GetAll() ([]*protocol.Post, error) {
 	children, _, err := zk.conn.Children(zk.rootDir)
-	return children, err
+	if err != nil {
+		return make([]*protocol.Post, 0), err
+	}
+
+	posts := make([]*protocol.Post, len(children))
+	for i := 0; i < len(children); i++ {
+		post, err := zk.getById(children[i])
+		if err == nil {
+			posts[i] = post
+		}
+	}
+	return posts, err
 }
 
 func (zk *ZkStorage) Update(data *protocol.Update) error {
@@ -102,14 +130,14 @@ func (zk *ZkStorage) Update(data *protocol.Update) error {
 	return err
 }
 
-func (zk *ZkStorage) Create(data *protocol.Post) (string, error) {
+func (zk *ZkStorage) Post(data *protocol.Post) (*protocol.Get, error) {
 	id := zk.getTaskId()
 	bytes, err := protocol.ToBytes(data)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	_, err = zk.conn.Create(zk.getPath(id), bytes, zk.flags, zk.acl)
-	return id, err
+	return &protocol.Get{id}, err
 }
 
 func (zk *ZkStorage) Delete(data *protocol.Delete) error {
@@ -117,6 +145,7 @@ func (zk *ZkStorage) Delete(data *protocol.Delete) error {
 	return err
 }
 
+// delete all children znodes (but not the parent znodes)
 func (zk *ZkStorage) DeleteAll() error {
 	children, _, err := zk.conn.Children(zk.rootDir)
 	if err != nil {
@@ -124,13 +153,12 @@ func (zk *ZkStorage) DeleteAll() error {
 	}
 
 	for _, c := range children {
-		err = zk.conn.Delete(c, -1)
+		err = zk.conn.Delete(zk.getPath(c), -1)
 		if err != nil {
 			return err
 		}
 	}
-
-	return zk.deleteDir(zk.conn, zk.rootDir)
+	return nil
 }
 
 func (zk *ZkStorage) createDir(conn *zkCli.Conn, dir string) error {
