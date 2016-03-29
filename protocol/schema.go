@@ -1,15 +1,29 @@
 package protocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+)
 
 type Path string
+type CmdType string
 
+const (
+	CMD_SHELL  = CmdType("shell")
+	CMD_DOCKER = CmdType("docker")
+)
+
+// meta data about a task to schedule. poor name ?
 type Post struct {
-	StartTime uint64 `json:"start"`
-	RepeatPeriod uint64 `json:"repeat"`
-	Cpu float64	`json:"cpu"`
-	Mem float64 `json:"mem"`
-	Cmd string  `json:"cmd"`
+	StartTime    int64    `json:"start"`   // start time in seconds
+	RepeatPeriod int64    `json:"repeat"`  // repeat period in seconds
+	MaxRetry     int      `json:"retry"`   // how many failures in total it can tolerate
+	Cpu          float64  `json:"cpu"`     // virtual CPU usage
+	Mem          float64  `json:"mem"`     // memory in MB
+	Cmd          string   `json:"cmd"`     // shell or docker command
+	CmdType      CmdType  `json:"cmdtype"` // "shell" or "docker"
+	Args         []string `json:"args"`    // docker arguments. note that it will be ignored for shell command. optional field
+	Image        string   `json:"image"`   // name of docker image. optional field
+	Name         string   `json:"name"`    // human-readable task name. optional field
 }
 
 type Update struct {
@@ -68,4 +82,3 @@ func ToDelete(bytes []byte) (*Delete, error) {
 		return &del, nil
 	}
 }
-

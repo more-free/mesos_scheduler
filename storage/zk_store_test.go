@@ -59,7 +59,7 @@ func TestZkStorage(t *testing.T) {
 	assert.Equal(t, nil, err)
 	assert.Equal(t, 2, len(datas))
 	for i := 0; i < len(datas); i++ {
-		assert.Equal(t, post, datas[i])
+		assert.Equal(t, post, datas[i].Post)
 	}
 
 	del := &protocol.Delete{

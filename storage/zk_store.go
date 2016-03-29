@@ -19,7 +19,7 @@ import (
 
 type Storage interface {
 	Get(*protocol.Get) (*protocol.Post, error)
-	GetAll() ([]*protocol.Post, error)
+	GetAll() ([]*protocol.Update, error)
 	Update(*protocol.Update) error
 	Post(*protocol.Post) (*protocol.Get, error) // create new and return unique task meta data for future query
 	Delete(*protocol.Delete) error
@@ -105,20 +105,20 @@ func (zk *ZkStorage) getById(id string) (*protocol.Post, error) {
 	return &post, nil
 }
 
-func (zk *ZkStorage) GetAll() ([]*protocol.Post, error) {
+func (zk *ZkStorage) GetAll() ([]*protocol.Update, error) {
 	children, _, err := zk.conn.Children(zk.rootDir)
 	if err != nil {
-		return make([]*protocol.Post, 0), err
+		return make([]*protocol.Update, 0), err
 	}
 
-	posts := make([]*protocol.Post, len(children))
+	updates := make([]*protocol.Update, len(children))
 	for i := 0; i < len(children); i++ {
 		post, err := zk.getById(children[i])
 		if err == nil {
-			posts[i] = post
+			updates[i] = &protocol.Update{children[i], post}
 		}
 	}
-	return posts, err
+	return updates, err
 }
 
 func (zk *ZkStorage) Update(data *protocol.Update) error {
@@ -170,11 +170,14 @@ func (zk *ZkStorage) createDir(conn *zkCli.Conn, dir string) error {
 	data := make([]byte, 0)
 
 	// ignore all intermediate error
-	conn.Create("/"+paths[0], data, zk.flags, zk.acl)
-	cur := "/" + paths[0]
-	for _, path := range paths[1 : len(paths)-1] {
-		cur += "/" + path
-		conn.Create(cur, data, zk.flags, zk.acl)
+	cur := ""
+	if len(paths) > 1 {
+		conn.Create("/"+paths[0], data, zk.flags, zk.acl)
+		cur = "/" + paths[0]
+		for _, path := range paths[1 : len(paths)-1] {
+			cur += "/" + path
+			conn.Create(cur, data, zk.flags, zk.acl)
+		}
 	}
 
 	cur += "/" + paths[len(paths)-1]
@@ -203,7 +206,7 @@ func (zk *ZkStorage) getPath(path string) string {
 }
 
 func (zk *ZkStorage) getTaskId() string {
-	return strconv.FormatInt(time.Now().Unix(), 10) + "-" + zk.randString(6)
+	return strconv.FormatInt(time.Now().UnixNano(), 10) + "-" + zk.randString(6)
 }
 
 func (zk *ZkStorage) randString(length int) string {
