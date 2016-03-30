@@ -1,6 +1,12 @@
 package main
 
 // TODO support repeating tasks
+// TODO support dependency graph
+// TODO add leader election
+// TODO scalability (task group, scheduler group, etc.)
+// TODO http component + UI
+// TODO more tests
+// TODO tutorial, document, etc.
 
 import (
 	"github.com/gogo/protobuf/proto"
@@ -21,143 +27,19 @@ import (
 type TriggerScheduler struct {
 	taskStore        storage.Storage
 	taskRuntimeStore storage.RuntimeStore
-	// runtime data is moved to history data once it completes or fails. these data can be further consumed by other services
-	taskStatStore  storage.RuntimeStore
-	tasks          *trigger.PostPriorityQueue
-	taskLock       *sync.Mutex
-	config         *SchedulerConfig
-	cleanStateQuit chan struct{} // switch on/off cleanState()
-	cleanLock      *sync.Mutex
+								   // runtime data is moved to history data once it completes or fails. these data can be further consumed by other services
+	taskStatStore    storage.RuntimeStore
+	tasks            *trigger.PostPriorityQueue
+	taskLock         *sync.Mutex
+	config           *SchedulerConfig
+	cleanStateQuit   chan struct{} // switch on/off cleanState()
+	cleanLock        *sync.Mutex
 }
 
 type SchedulerConfig struct {
 	StartTimeout   time.Duration // the max duration when a task stays in "STARTING" state
 	CleanTimeout   time.Duration // the max duration after a task finishes or fails. Any state data exceeds
 	HistoryTimeout time.Duration // the max duration for a stat data to exist
-}
-
-func (s *TriggerScheduler) nowInMS() int64 {
-	return time.Now().UnixNano() / (int64(time.Millisecond) / int64(time.Nanosecond))
-}
-
-func (s *TriggerScheduler) nanoToMS(nano int64) int64 {
-	return nano / (int64(time.Millisecond) / int64(time.Nanosecond))
-}
-
-// a cron job runs periodically
-func (s *TriggerScheduler) cleanState() {
-	run := func(ch chan<- struct{}, timeout time.Duration, quit <-chan struct{}) {
-		for {
-			select {
-			case <-quit:
-				return
-			case <-time.After(timeout):
-				ch <- struct{}{}
-			}
-		}
-	}
-
-	overTimeNow := func(lastModifiedMS int64, timeout time.Duration) bool {
-		return s.nowInMS()-lastModifiedMS >= s.nanoToMS(timeout.Nanoseconds())
-	}
-
-	startChan := make(chan struct{})
-	cleanChan := make(chan struct{})
-	historyChan := make(chan struct{})
-
-	go run(startChan, s.config.StartTimeout, s.cleanStateQuit)
-	go run(cleanChan, s.config.CleanTimeout, s.cleanStateQuit)
-	go run(historyChan, s.config.HistoryTimeout, s.cleanStateQuit)
-
-	for {
-		select {
-		case <-startChan:
-			go func() {
-				ids, _ := s.taskRuntimeStore.GetAllId()
-				for _, id := range ids {
-					rt, err := s.taskRuntimeStore.GetRuntime(id)
-					if err != nil && rt.State == protocol.TASK_STATE_STARTING &&
-						overTimeNow(rt.LastModifiedMS, s.config.StartTimeout) {
-						_, _, err = s.taskRuntimeStore.SetRuntime(
-							id,
-							&protocol.TaskRunTime{
-								Failure:        rt.Failure,
-								State:          protocol.TASK_STATE_STAGING,
-								LastModifiedMS: s.nowInMS(),
-							},
-						)
-						if err != nil {
-							log.Errorf("Failed to update state for task : %v with error %v\n", id, err)
-						} else {
-							log.Infof("Update task %v from STARTING to STAGING\n", id)
-						}
-					}
-				}
-			}()
-
-		case <-cleanChan: // do we really need this ?
-			go func() {
-				s.cleanLock.Lock()
-				ids, _ := s.taskRuntimeStore.GetAllId()
-				for _, id := range ids {
-					rt, err := s.taskRuntimeStore.GetRuntime(id)
-					if err != nil {
-						if rt.State == protocol.TASK_STATE_FINISHED {
-							s.deleteOrRepeat(string(id))
-						} else if rt.State == protocol.TASK_STATE_FAILED {
-							s.deleteOrRetry(string(id))
-						}
-					}
-				}
-				s.cleanLock.Unlock()
-			}()
-
-		case <-historyChan:
-			go func() {
-				ids, _ := s.taskStatStore.GetAllId()
-				for _, id := range ids {
-					rt, err := s.taskStatStore.GetRuntime(id)
-					if err != nil && overTimeNow(rt.LastModifiedMS, s.config.HistoryTimeout) {
-						err = s.taskStatStore.Delete(id)
-						if err != nil {
-							log.Errorf("Failed to delete task %v from history data store : %v\n", id, err)
-						} else {
-							log.Infof("Deleted task %v from history data store\n", id)
-						}
-					}
-				}
-			}()
-
-		case <-s.cleanStateQuit:
-			log.Infoln("State cleaner quit")
-			return
-		}
-	}
-}
-
-func (s *TriggerScheduler) moveToHistory(id string) error {
-	rt, err := s.taskRuntimeStore.GetRuntime(storage.TaskId(id))
-	if err != nil {
-		log.Errorf("Failed to move to history %v\n", err)
-		return err
-	}
-
-	if rt.State == protocol.TASK_STATE_FINISHED || rt.State == protocol.TASK_STATE_FAILED {
-		_, _, err = s.taskStatStore.SetRuntime(storage.TaskId(id), rt)
-		if err != nil {
-			log.Errorf("Failed to move to history %v\n", err)
-			return err
-		}
-
-		err = s.taskRuntimeStore.Delete(storage.TaskId(id))
-		if err != nil {
-			log.Errorf("Failed to move to history %v\n", err)
-			return err
-		}
-	}
-
-	log.Infof("Moved task %v to history data\n", id)
-	return nil
 }
 
 func NewTriggerScheduler(zkServers []string, config *SchedulerConfig) *TriggerScheduler {
@@ -209,14 +91,6 @@ func (s *TriggerScheduler) Cleanup() error {
 	}
 }
 
-func (s *TriggerScheduler) errToStr(err error) string {
-	if err == nil {
-		return ""
-	} else {
-		return err.Error()
-	}
-}
-
 func (s *TriggerScheduler) TriggerUpdated(updatedTask *protocol.Update) error {
 	err := s.taskStore.Update(updatedTask)
 	if err != nil {
@@ -250,27 +124,6 @@ func (s *TriggerScheduler) TriggerCreated(newTask *protocol.Post) (*protocol.Get
 	return get, nil
 }
 
-func (s *TriggerScheduler) isTriggerable(t *protocol.Update) bool {
-	return t.StartTime <= time.Now().Unix()
-}
-
-func (s *TriggerScheduler) loadAll() error {
-	updates, err := s.taskStore.GetAll()
-	if err != nil {
-		return err
-	}
-
-	// it is important to keep the date in zookeeper and the data in memory consistent,
-	// i.e. all data in memory must be the data with STAGING state.
-	for _, u := range updates {
-		state, err := s.taskRuntimeStore.GetState(storage.TaskId(u.TaskId))
-		if err != nil && state == protocol.TASK_STATE_STAGING {
-			s.tasks.Push(u)
-		}
-	}
-	return nil
-}
-
 func (s *TriggerScheduler) Registered(driver sched.SchedulerDriver, frameworkId *mesos.FrameworkID, masterInfo *mesos.MasterInfo) {
 	log.Infoln("Scheduler Registered with Master ", masterInfo)
 	err := s.loadAll()
@@ -287,8 +140,25 @@ func (s *TriggerScheduler) Reregistered(driver sched.SchedulerDriver, masterInfo
 	}
 }
 
-func (s *TriggerScheduler) Disconnected(sched.SchedulerDriver) {
-	log.Infoln("Scheduler Disconnected")
+func (s *TriggerScheduler) loadAll() error {
+	updates, err := s.taskStore.GetAll()
+	if err != nil {
+		return err
+	}
+
+	// it is important to keep the date in zookeeper and the data in memory consistent,
+	// i.e. all data in memory must be the data with STAGING state.
+	for _, u := range updates {
+		state, err := s.taskRuntimeStore.GetState(storage.TaskId(u.TaskId))
+		if err != nil && state == protocol.TASK_STATE_STAGING {
+			s.tasks.Push(u)
+		}
+	}
+	// also need to recover from runtime store : for finished but repeatable tasks or failed but retriable tasks,
+	// re-load them into memorys
+	s.scanFinishedFailedTasks()
+
+	return nil
 }
 
 func (s *TriggerScheduler) ResourceOffers(driver sched.SchedulerDriver, offers []*mesos.Offer) {
@@ -335,6 +205,51 @@ func (s *TriggerScheduler) ResourceOffers(driver sched.SchedulerDriver, offers [
 			log.Infof("Launched %v tasks with offer %s\n", len(mesosTasks), offer.Id.GetValue())
 		}
 	}
+}
+
+// compute the max number of tasks that can be launched given an offer.
+// note it will modify tasks priorityQueue.
+func (s *TriggerScheduler) prepareTask(offer *mesos.Offer) []*protocol.Update {
+	pendingTasks := make([]*protocol.Update, 0)
+
+	var cpus, mem float64
+	for _, resource := range offer.Resources {
+		switch resource.GetName() {
+		case "cpus":
+			cpus += *resource.GetScalar().Value
+		case "mem":
+			mem += *resource.GetScalar().Value
+		}
+	}
+
+	s.taskLock.Lock()
+	defer s.taskLock.Unlock()
+
+	left := make([]*protocol.Update, 0)
+	for s.tasks.Len() > 0 {
+		next := s.tasks.Pop()
+		if !s.isTriggerable(next) {
+			left = append(left, next)
+			break
+		}
+
+		if cpus >= next.Cpu && mem >= next.Mem {
+			cpus -= next.Cpu
+			mem -= next.Mem
+			pendingTasks = append(pendingTasks, next)
+		}
+
+		if cpus == 0.0 || mem == 0.0 {
+			break
+		}
+	}
+
+	// add back unlaunched tasks to s.tasks
+	for _, task := range left {
+		s.tasks.Push(task)
+	}
+
+	return pendingTasks
 }
 
 // convert internal task struct (protocol.Post) to mesos.TaskInfo
@@ -387,51 +302,6 @@ func (s *TriggerScheduler) toMesosDockerTask(task *protocol.Update) *mesos.TaskI
 			util.NewScalarResource("mem", task.Mem),
 		},
 	}
-}
-
-// compute the max number of tasks that can be launched given an offer.
-// note it will modify tasks priorityQueue.
-func (s *TriggerScheduler) prepareTask(offer *mesos.Offer) []*protocol.Update {
-	pendingTasks := make([]*protocol.Update, 0)
-
-	var cpus, mem float64
-	for _, resource := range offer.Resources {
-		switch resource.GetName() {
-		case "cpus":
-			cpus += *resource.GetScalar().Value
-		case "mem":
-			mem += *resource.GetScalar().Value
-		}
-	}
-
-	s.taskLock.Lock()
-	defer s.taskLock.Unlock()
-
-	left := make([]*protocol.Update, 0)
-	for s.tasks.Len() > 0 {
-		next := s.tasks.Pop()
-		if !s.isTriggerable(next) {
-			left = append(left, next)
-			break
-		}
-
-		if cpus >= next.Cpu && mem >= next.Mem {
-			cpus -= next.Cpu
-			mem -= next.Mem
-			pendingTasks = append(pendingTasks, next)
-		}
-
-		if cpus == 0.0 || mem == 0.0 {
-			break
-		}
-	}
-
-	// add back unlaunched tasks to s.tasks
-	for _, task := range left {
-		s.tasks.Push(task)
-	}
-
-	return pendingTasks
 }
 
 // it is important to notice that mesos guarantees that each status update message
@@ -553,10 +423,10 @@ func (s *TriggerScheduler) deleteOrRetry(taskId string) error {
 	}
 
 	// remove task data for non-retriable tasks
-	if rt.Failure >= post.MaxRetry { // including MaxRetry == 0
-		return s.deleteFailedTask(taskId, rt.Failure)
-	} else {
+	if post.MaxRetry < 0 || rt.Failure < post.MaxRetry { // negative MaxRetry means infinite retry
 		return s.retryTask(taskId)
+	} else {
+		return s.deleteFailedTask(taskId, rt.Failure)
 	}
 }
 
@@ -593,6 +463,35 @@ func (s *TriggerScheduler) retryTask(taskId string) error {
 	return nil
 }
 
+func (s *TriggerScheduler) moveToHistory(id string) error {
+	rt, err := s.taskRuntimeStore.GetRuntime(storage.TaskId(id))
+	if err != nil {
+		log.Errorf("Failed to move to history %v\n", err)
+		return err
+	}
+
+	if rt.State == protocol.TASK_STATE_FINISHED || rt.State == protocol.TASK_STATE_FAILED {
+		_, _, err = s.taskStatStore.SetRuntime(storage.TaskId(id), rt)
+		if err != nil {
+			log.Errorf("Failed to move to history %v\n", err)
+			return err
+		}
+
+		err = s.taskRuntimeStore.Delete(storage.TaskId(id))
+		if err != nil {
+			log.Errorf("Failed to move to history %v\n", err)
+			return err
+		}
+	}
+
+	log.Infof("Moved task %v to history data\n", id)
+	return nil
+}
+
+func (s *TriggerScheduler) Disconnected(sched.SchedulerDriver) {
+	log.Infoln("Scheduler Disconnected")
+}
+
 func (s *TriggerScheduler) OfferRescinded(driver sched.SchedulerDriver, id *mesos.OfferID) {
 	log.Infof("Offer '%v' rescinded.\n", *id)
 }
@@ -611,6 +510,124 @@ func (s *TriggerScheduler) ExecutorLost(driver sched.SchedulerDriver, exId *meso
 
 func (s *TriggerScheduler) Error(driver sched.SchedulerDriver, err string) {
 	log.Infoln("Scheduler received error:", err)
+}
+
+// a cron job runs periodically
+func (s *TriggerScheduler) cleanState() {
+	run := func(ch chan <- struct{}, timeout time.Duration, quit <-chan struct{}) {
+		for {
+			select {
+			case <-quit:
+				return
+			case <-time.After(timeout):
+				ch <- struct{}{}
+			}
+		}
+	}
+
+	startChan := make(chan struct{})
+	cleanChan := make(chan struct{})
+	historyChan := make(chan struct{})
+
+	go run(startChan, s.config.StartTimeout, s.cleanStateQuit)
+	go run(cleanChan, s.config.CleanTimeout, s.cleanStateQuit)
+	go run(historyChan, s.config.HistoryTimeout, s.cleanStateQuit)
+
+	for {
+		select {
+		case <-startChan:
+			go s.scanStartingTasks()
+
+		case <-cleanChan:
+			// do we really need this ?
+			go s.scanFinishedFailedTasks()
+
+		case <-historyChan:
+			go s.scanHistoryStore()
+
+		case <-s.cleanStateQuit:
+			log.Infoln("State cleaner quit")
+			return
+		}
+	}
+}
+
+func (s *TriggerScheduler) scanStartingTasks() {
+	ids, _ := s.taskRuntimeStore.GetAllId()
+	for _, id := range ids {
+		rt, err := s.taskRuntimeStore.GetRuntime(id)
+		if err != nil && rt.State == protocol.TASK_STATE_STARTING &&
+		s.overTimeNow(rt.LastModifiedMS, s.config.StartTimeout) {
+			_, _, err = s.taskRuntimeStore.SetRuntime(
+				id,
+				&protocol.TaskRunTime{
+					Failure:        rt.Failure,
+					State:          protocol.TASK_STATE_STAGING,
+					LastModifiedMS: s.nowInMS(),
+				},
+			)
+			if err != nil {
+				log.Errorf("Failed to update state for task : %v with error %v\n", id, err)
+			} else {
+				log.Infof("Update task %v from STARTING to STAGING\n", id)
+			}
+		}
+	}
+}
+
+func (s *TriggerScheduler) scanFinishedFailedTasks() {
+	s.cleanLock.Lock()
+	ids, _ := s.taskRuntimeStore.GetAllId()
+	for _, id := range ids {
+		rt, err := s.taskRuntimeStore.GetRuntime(id)
+		if err != nil {
+			if rt.State == protocol.TASK_STATE_FINISHED {
+				s.deleteOrRepeat(string(id))
+			} else if rt.State == protocol.TASK_STATE_FAILED {
+				s.deleteOrRetry(string(id))
+			}
+		}
+	}
+	s.cleanLock.Unlock()
+}
+
+func (s *TriggerScheduler) scanHistoryStore() {
+	ids, _ := s.taskStatStore.GetAllId()
+	for _, id := range ids {
+		rt, err := s.taskStatStore.GetRuntime(id)
+		if err != nil && s.overTimeNow(rt.LastModifiedMS, s.config.HistoryTimeout) {
+			err = s.taskStatStore.Delete(id)
+			if err != nil {
+				log.Errorf("Failed to delete task %v from history data store : %v\n", id, err)
+			} else {
+				log.Infof("Deleted task %v from history data store\n", id)
+			}
+		}
+	}
+}
+
+func (s *TriggerScheduler) overTimeNow(lastModifiedMS int64, timeout time.Duration) bool {
+	return s.nowInMS() - lastModifiedMS >= s.nanoToMS(timeout.Nanoseconds())
+}
+
+func (s *TriggerScheduler) isTriggerable(t *protocol.Update) bool {
+	return t.StartTime <= time.Now().Unix()
+}
+
+func (s *TriggerScheduler) nowInMS() int64 {
+	return time.Now().UnixNano() / (int64(time.Millisecond) / int64(time.Nanosecond))
+}
+
+func (s *TriggerScheduler) nanoToMS(nano int64) int64 {
+	return nano / (int64(time.Millisecond) / int64(time.Nanosecond))
+}
+
+func (s *TriggerScheduler) errToStr(err error) string {
+	if err == nil {
+		return ""
+	} else {
+		return err.Error()
+	}
 }
 
 func main() {
@@ -677,7 +694,7 @@ func main() {
 		get, err = scheduler.TriggerCreated(&protocol.Post{
 			StartTime:    time.Now().Unix() + 5, // 5 seconds after now
 			RepeatPeriod: 0,
-			MaxRetry:     3,
+			MaxRetry:     -1,
 			Cpu:          0.1,
 			Mem:          8,
 			Cmd:          "fake-bash /home/vagrant/some.sh test-task-3",

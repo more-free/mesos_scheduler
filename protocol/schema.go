@@ -28,7 +28,7 @@ const (
 type Post struct {
 	StartTime    int64    `json:"start"`   // start time in seconds
 	RepeatPeriod int64    `json:"repeat"`  // repeat period in seconds
-	MaxRetry     int32    `json:"retry"`   // how many failures in total it can tolerate
+	MaxRetry     int32    `json:"retry"`   // how many failures in total it can tolerate, a negative value indicates infinite retry
 	Cpu          float64  `json:"cpu"`     // virtual CPU usage
 	Mem          float64  `json:"mem"`     // memory in MB
 	Cmd          string   `json:"cmd"`     // shell or docker command
