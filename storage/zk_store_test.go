@@ -15,9 +15,9 @@ func TestZkStorage(t *testing.T) {
 		log.Println("zookeeper is not running on localhost:2181. Pass the test")
 		return
 	}
-
+	log.Println("Testing zookeeper store")
 	servers := strings.Split("localhost:2181", ",")
-	zk := NewZkStorage(servers, "/test-scheduler/data")
+	zk := NewZkStorage(servers, "/test-scheduler/state")
 	err = zk.Open()
 	defer zk.Close()
 	assert.Equal(t, nil, err)

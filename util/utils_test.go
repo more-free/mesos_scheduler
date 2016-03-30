@@ -39,7 +39,7 @@ func TestPostPriorityQueue(t *testing.T) {
 		},
 	}
 
-	pq := NewPostPriorityQyeye()
+	pq := NewPostPriorityQueue()
 	pq.Push(p4)
 	pq.Push(p2)
 	pq.Push(p3)
