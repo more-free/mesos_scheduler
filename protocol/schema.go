@@ -24,18 +24,26 @@ const (
 	TASK_STATE_FAILED   = TaskState(4)
 )
 
+type PortMapping struct {
+	HostPort      uint32
+	ContainerPort uint32
+	Protocol      string
+}
+
 // meta data about a task to schedule. poor name ?
 type Post struct {
-	StartTime    int64    `json:"start"`   // start time in seconds
-	RepeatPeriod int64    `json:"repeat"`  // repeat period in seconds
-	MaxRetry     int32    `json:"retry"`   // how many failures in total it can tolerate, a negative value indicates infinite retry
-	Cpu          float64  `json:"cpu"`     // virtual CPU usage
-	Mem          float64  `json:"mem"`     // memory in MB
-	Cmd          string   `json:"cmd"`     // shell or docker command
-	CmdType      CmdType  `json:"cmdtype"` // "shell" or "docker"
-	Args         []string `json:"args"`    // docker arguments. note that it will be ignored for shell command. optional field
-	Image        string   `json:"image"`   // name of docker image. optional field
-	Name         string   `json:"name"`    // human-readable task name. optional field
+	StartTime    int64          `json:"start"`   // start time in seconds
+	RepeatPeriod int64          `json:"repeat"`  // repeat period in seconds (NOT supported for now)
+	MaxRetry     int32          `json:"retry"`   // how many failures in total it can tolerate, a negative value indicates infinite retry
+	Cpu          float64        `json:"cpu"`     // virtual CPU usage
+	Mem          float64        `json:"mem"`     // memory in MB
+	Disk         float64        `json:"disk"`    // disk in MB. optional field
+	PortMapping  []*PortMapping `json:"port"`    // host -> container port mappings, set host port to 0 indicates a dynamic port mapping
+	Cmd          string         `json:"cmd"`     // shell or docker command
+	CmdType      CmdType        `json:"cmdtype"` // "shell" or "docker"
+	Args         []string       `json:"args"`    // docker arguments. note that it will be ignored for shell command. optional field
+	Image        string         `json:"image"`   // name of docker image. optional field
+	Name         string         `json:"name"`    // human-readable task name. optional field
 }
 
 type Update struct {
@@ -50,6 +58,8 @@ type Get struct {
 type Delete struct {
 	TaskId string `json:"id"`
 }
+
+type TaskRunTimeList []*TaskRunTime
 
 type TaskRunTime struct {
 	Failure        int32     `json:"fail"`
@@ -130,4 +140,26 @@ func ToTaskRunTime(data []byte) (*TaskRunTime, error) {
 	} else {
 		return &trt, nil
 	}
+}
+
+func (u *Update) ToDelete() *Delete {
+	return &Delete{
+		u.TaskId,
+	}
+}
+
+func (u *Update) ToGet() *Get {
+	return &Get{u.TaskId}
+}
+
+func (t TaskRunTimeList) Len() int {
+	return len(t)
+}
+
+func (t TaskRunTimeList) Swap(i, j int) {
+	t[i], t[j] = t[j], t[i]
+}
+
+func (t TaskRunTimeList) Less(i, j int) bool {
+	return t[i].LastModifiedMS < t[j].LastModifiedMS
 }

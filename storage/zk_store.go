@@ -80,11 +80,11 @@ func (zk *ZkStorage) Open() error {
 }
 
 func (zk *ZkStorage) Close() error {
+	defer zk.conn.Close()
 	err := zk.deleteDir(zk.conn, zk.rootDir)
 	if err != nil {
 		return err
 	}
-	zk.conn.Close()
 	return nil
 }
 

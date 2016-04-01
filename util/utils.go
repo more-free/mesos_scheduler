@@ -2,6 +2,8 @@ package util
 
 import (
 	"container/heap"
+	"errors"
+	"github.com/mesos/mesos-go/mesosproto"
 	"github.com/more-free/mesos_scheduler/protocol"
 )
 
@@ -55,6 +57,12 @@ func (q *PostPriorityQueue) Pop() *protocol.Update {
 
 // TODO use heap.Fix to reduce the time complexity
 func (q *PostPriorityQueue) Update(p *protocol.Update) {
+	q.Delete(p.ToDelete())
+	q.Push(p)
+}
+
+// TODO should be optimized
+func (q *PostPriorityQueue) Delete(p *protocol.Delete) {
 	back := make([]*protocol.Update, 0)
 	for q.Len() > 0 {
 		t := q.Pop()
@@ -66,7 +74,6 @@ func (q *PostPriorityQueue) Update(p *protocol.Update) {
 	for _, t := range back {
 		q.Push(t)
 	}
-	q.Push(p)
 }
 
 func (q *PostPriorityQueue) Len() int {
@@ -75,4 +82,31 @@ func (q *PostPriorityQueue) Len() int {
 
 func (q *PostPriorityQueue) GetAll() []*protocol.Update {
 	return q.pq
+}
+
+func CloneRange(ranges []*mesosproto.Value_Range) []*mesosproto.Value_Range {
+	clonedRange := make([]*mesosproto.Value_Range, len(ranges))
+	for i := 0; i < len(clonedRange); i++ {
+		begin, end := *ranges[i].Begin, *ranges[i].End
+		clonedRange[i] = &mesosproto.Value_Range{
+			Begin: &begin,
+			End:   &end,
+		}
+	}
+	return clonedRange
+}
+
+func Cascade(errs ...error) error {
+	msg := ""
+	for _, e := range errs {
+		if e != nil {
+			msg += e.Error() + ";;"
+		}
+	}
+
+	if msg == "" {
+		return nil
+	} else {
+		return errors.New(msg)
+	}
 }

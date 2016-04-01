@@ -19,6 +19,7 @@ type RuntimeStore interface {
 	Delete(TaskId) error
 
 	GetAllId() ([]TaskId, error)
+	DeleteAll() error
 
 	Open() error
 	Close() error
@@ -139,4 +140,19 @@ func (zk *ZkRuntimeStore) GetAllId() ([]TaskId, error) {
 		taskIds[i] = TaskId(ids[i])
 	}
 	return taskIds, err
+}
+
+func (zk *ZkRuntimeStore) DeleteAll() error {
+	ids, err := zk.GetAllId()
+	if err != nil {
+		return err
+	}
+
+	for _, id := range ids {
+		err = zk.Delete(id)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
