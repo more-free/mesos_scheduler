@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/mesos/mesos-go/mesosproto"
 	"github.com/more-free/mesos_scheduler/protocol"
+	"time"
 )
 
 type PriorityQueue []*protocol.Update
@@ -109,4 +110,8 @@ func Cascade(errs ...error) error {
 	} else {
 		return errors.New(msg)
 	}
+}
+
+func NowInMS() int64 {
+	return time.Now().UnixNano() / (int64(time.Millisecond) / int64(time.Nanosecond))
 }

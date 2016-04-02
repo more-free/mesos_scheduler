@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 )
 
 type Path string
@@ -25,25 +26,25 @@ const (
 )
 
 type PortMapping struct {
-	HostPort      uint32
-	ContainerPort uint32
-	Protocol      string
+	HostPort      uint32 `json:"host"`
+	ContainerPort uint32 `json:"container"`
+	Protocol      string `json:"protocol"`
 }
 
 // meta data about a task to schedule. poor name ?
 type Post struct {
-	StartTime    int64          `json:"start"`   // start time in seconds
-	RepeatPeriod int64          `json:"repeat"`  // repeat period in seconds (NOT supported for now)
-	MaxRetry     int32          `json:"retry"`   // how many failures in total it can tolerate, a negative value indicates infinite retry
-	Cpu          float64        `json:"cpu"`     // virtual CPU usage
-	Mem          float64        `json:"mem"`     // memory in MB
-	Disk         float64        `json:"disk"`    // disk in MB. optional field
-	PortMapping  []*PortMapping `json:"port"`    // host -> container port mappings, set host port to 0 indicates a dynamic port mapping
-	Cmd          string         `json:"cmd"`     // shell or docker command
-	CmdType      CmdType        `json:"cmdtype"` // "shell" or "docker"
-	Args         []string       `json:"args"`    // docker arguments. note that it will be ignored for shell command. optional field
-	Image        string         `json:"image"`   // name of docker image. optional field
-	Name         string         `json:"name"`    // human-readable task name. optional field
+	StartTime    int64          `json:"start"`       // start time in seconds
+	RepeatPeriod int64          `json:"repeat"`      // repeat period in seconds (NOT supported for now)
+	MaxRetry     int32          `json:"retry"`       // how many failures in total it can tolerate, a negative value indicates infinite retry
+	Cpu          float64        `json:"cpu"`         // virtual CPU usage
+	Mem          float64        `json:"mem"`         // memory in MB
+	Disk         float64        `json:"disk"`        // disk in MB. optional field
+	PortMapping  []*PortMapping `json:"portmapping"` // host -> container port mappings, set host port to 0 indicates a dynamic port mapping
+	Cmd          string         `json:"cmd"`         // shell or docker command
+	CmdType      CmdType        `json:"cmdtype"`     // "shell" or "docker"
+	Args         []string       `json:"args"`        // docker arguments. note that it will be ignored for shell command. optional field
+	Image        string         `json:"image"`       // name of docker image. optional field
+	Name         string         `json:"name"`        // human-readable task name. optional field
 }
 
 type Update struct {
@@ -62,9 +63,12 @@ type Delete struct {
 type TaskRunTimeList []*TaskRunTime
 
 type TaskRunTime struct {
-	Failure        int32     `json:"fail"`
-	State          TaskState `json:"state"`
-	LastModifiedMS int64     `json:"time"` // milliseconds
+	Failure        int32          `json:"fail"`  // how many times it fails so far
+	State          TaskState      `json:"state"` // current state
+	Host           string         `json:"host"`  // on which mesos slave it runs
+	PortMapping    []*PortMapping `json:"port"`  // required for dynamic port mapping
+	LastModifiedMS int64          `json:"time"`  // milliseconds
+	Post           *Post          `json:"post"`  // optional. meta data. for stat store only.
 }
 
 func ToBytes(p interface{}) ([]byte, error) {
@@ -150,6 +154,87 @@ func (u *Update) ToDelete() *Delete {
 
 func (u *Update) ToGet() *Get {
 	return &Get{u.TaskId}
+}
+
+func (t *TaskRunTime) Copy() *TaskRunTime {
+	return &TaskRunTime{
+		Failure:        t.Failure,
+		State:          t.State,
+		Host:           t.Host,
+		PortMapping:    t.PortMapping,
+		LastModifiedMS: t.LastModifiedMS,
+	}
+}
+
+func (t *TaskRunTime) WithFailure(failure int32) *TaskRunTime {
+	t.Failure = failure
+	return t
+}
+
+func (t *TaskRunTime) WithState(s TaskState) *TaskRunTime {
+	t.State = s
+	return t
+}
+
+func (t *TaskRunTime) WithHost(h string) *TaskRunTime {
+	t.Host = h
+	return t
+}
+
+func (t *TaskRunTime) WithPortMapping(p []*PortMapping) *TaskRunTime {
+	t.PortMapping = p
+	return t
+}
+
+func (t *TaskRunTime) WithLastModifiedMS(ts int64) *TaskRunTime {
+	t.LastModifiedMS = ts
+	return t
+}
+
+func (t *TaskRunTime) WithPost(p *Post) *TaskRunTime {
+	t.Post = p
+	return t
+}
+
+func (t *TaskRunTime) String() string {
+	s := fmt.Sprintf("state=%v,failure=%v,host=%v,port=%v,lastmodified=%v",
+		t.State, t.Failure, t.Host, t.PortMapping, t.LastModifiedMS)
+	if t.Post != nil {
+		s = fmt.Sprintf("%s,task=%v.", s, t.Post)
+	}
+
+	if bytes, err := json.Marshal(t); err == nil {
+		return string(bytes)
+	} else {
+		return s
+	}
+}
+
+func (p *PortMapping) String() string {
+	if bytes, err := json.Marshal(p); err == nil {
+		return string(bytes)
+	} else {
+		return fmt.Sprintf("%vhost:%vcontainer:%v", p.HostPort, p.ContainerPort, p.Protocol)
+	}
+}
+
+func (t TaskState) String() string {
+	switch t {
+	case TASK_STATE_ERROR:
+		return "error"
+	case TASK_STATE_STAGING:
+		return "staging"
+	case TASK_STATE_STARTING:
+		return "starting"
+	case TASK_STATE_RUNNING:
+		return "running"
+	case TASK_STATE_FINISHED:
+		return "finished"
+	case TASK_STATE_FAILED:
+		return "failed"
+	default:
+		return "unknown"
+	}
 }
 
 func (t TaskRunTimeList) Len() int {

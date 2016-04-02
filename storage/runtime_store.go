@@ -1,6 +1,9 @@
 package storage
 
-import "github.com/more-free/mesos_scheduler/protocol"
+import (
+	"github.com/more-free/mesos_scheduler/protocol"
+	"github.com/more-free/mesos_scheduler/util"
+)
 
 type TaskId string
 
@@ -48,6 +51,7 @@ func (zk *ZkRuntimeStore) GetRuntime(id TaskId) (*protocol.TaskRunTime, error) {
 }
 
 func (zk *ZkRuntimeStore) SetRuntime(id TaskId, nrt *protocol.TaskRunTime) (string, *protocol.TaskRunTime, error) {
+	nrt = nrt.WithLastModifiedMS(util.NowInMS())
 	exists, _, err := zk.conn.Exists(zk.getPath(string(id)))
 	if err != nil {
 		return "", nil, err
@@ -90,11 +94,7 @@ func (zk *ZkRuntimeStore) SetState(id TaskId, ns protocol.TaskState) (protocol.T
 		return protocol.TASK_STATE_ERROR, err
 	}
 
-	nrt := &protocol.TaskRunTime{
-		Failure: rt.Failure,
-		State:   ns,
-	}
-	_, _, err = zk.SetRuntime(id, nrt)
+	_, _, err = zk.SetRuntime(id, rt.WithState(ns))
 	if err != nil {
 		return protocol.TASK_STATE_ERROR, err
 	}
@@ -117,11 +117,7 @@ func (zk *ZkRuntimeStore) SetFailure(id TaskId, f int32) (int32, error) {
 		return -1, err
 	}
 
-	nrt := &protocol.TaskRunTime{
-		Failure: f,
-		State:   rt.State,
-	}
-	_, _, err = zk.SetRuntime(id, nrt)
+	_, _, err = zk.SetRuntime(id, rt.WithFailure(f))
 	if err != nil {
 		return -1, err
 	}

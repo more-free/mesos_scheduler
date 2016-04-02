@@ -24,8 +24,11 @@ import (
 	"github.com/more-free/mesos_scheduler/storage"
 	trigger "github.com/more-free/mesos_scheduler/util"
 	"net"
+	"os"
+	"os/signal"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -94,6 +97,7 @@ func (s *TriggerScheduler) Start() error {
 	}
 
 	go s.cleanState()
+	go s.captureInterrupt()
 
 	s.resourceLock.Lock()
 	s.setStatus(SCHEDULER_STATUS_RUNNING)
@@ -130,7 +134,6 @@ func (s *TriggerScheduler) initDriver() error {
 	return nil
 }
 
-// It must be
 func (s *TriggerScheduler) Stop() error {
 	s.resourceLock.Lock()
 	defer s.resourceLock.Unlock()
@@ -164,7 +167,22 @@ func (s *TriggerScheduler) Stop() error {
 	}
 }
 
-// clear all storage data
+// it requires "go build ..." to take effect, because "go run ..." will still
+// receive the signal (ex. from CTRL-C)
+func (s *TriggerScheduler) captureInterrupt() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt)
+	signal.Notify(ch, syscall.SIGTERM)
+
+	select {
+	case <-s.quit:
+	case <-ch:
+		log.Infoln("Interruption received. Pre-quit cleanup...")
+		s.Stop()
+	}
+}
+
+// clear all storage data. Use carefully.
 func (s *TriggerScheduler) Clear() error {
 	return trigger.Cascade(
 		s.taskStore.DeleteAll(),
@@ -303,7 +321,13 @@ func (s *TriggerScheduler) GetAllStat() (protocol.TaskRunTimeList, error) {
 		if err != nil {
 			return rtrs, err
 		} else {
-			rtrs = append(rtrs, rt)
+			// append meta data from task store
+			if post, err := s.taskStore.Get(&protocol.Get{string(id)}); err == nil {
+				rt = rt.WithPost(post)
+				rtrs = append(rtrs, rt)
+			} else {
+				return rtrs, err
+			}
 		}
 	}
 
@@ -364,7 +388,15 @@ func (s *TriggerScheduler) ResourceOffers(driver sched.SchedulerDriver, offers [
 			// the next time there might be duplicate tasks launched. Instead we always update state first, by doing this, if "launching task"
 			// fails, the states of those tasks remain "STARTING" for a while, until a cronjob clears all STARTING tasks when they exceed
 			// the start timeout.
-			_, err := s.taskRuntimeStore.SetState(storage.TaskId(t.TaskId), protocol.TASK_STATE_STARTING)
+			_, _, err := s.taskRuntimeStore.SetRuntime(
+				storage.TaskId(t.TaskId),
+				&protocol.TaskRunTime{
+					Failure:     0,
+					State:       protocol.TASK_STATE_STARTING,
+					Host:        *offer.Hostname, // ip
+					PortMapping: t.PortMapping,
+				},
+			)
 			if err == nil {
 				mesosTasks = append(mesosTasks, task)
 			} else {
@@ -377,7 +409,7 @@ func (s *TriggerScheduler) ResourceOffers(driver sched.SchedulerDriver, offers [
 		// runs periodically to fix this.
 		_, err := driver.LaunchTasks([]*mesos.OfferID{offer.Id}, mesosTasks, &mesos.Filters{RefuseSeconds: proto.Float64(1)})
 		if err != nil {
-			log.Errorf("Failed to launch tasks %v. Restoring...\n", mesosTasks)
+			log.Errorf("Failed to launch tasks %v due to error : %v. Restoring...\n", mesosTasks, err)
 			for _, t := range pendingTasks {
 				s.taskRuntimeStore.SetState(storage.TaskId(t.TaskId), protocol.TASK_STATE_STAGING)
 				s.tasks.Push(t)
@@ -666,7 +698,7 @@ func (s *TriggerScheduler) deleteOrRepeat(taskId string) error {
 
 		// it is important to delete from store before deleting from runtime, otherwise (if reversing the order), it may only exist
 		// in store but not in runtime, which leads a never-deleted store entry.
-		return s.moveToHistory(taskId)
+		return s.moveToHistory(taskId, post)
 	} else {
 		// TODO handle repeating task here
 		return nil
@@ -695,11 +727,11 @@ func (s *TriggerScheduler) deleteOrRetry(taskId string) error {
 	if post.MaxRetry < 0 || rt.Failure < post.MaxRetry { // negative MaxRetry means infinite retry
 		return s.retryTask(taskId)
 	} else {
-		return s.deleteFailedTask(taskId, rt.Failure)
+		return s.deleteFailedTask(taskId, rt.Failure, post)
 	}
 }
 
-func (s *TriggerScheduler) deleteFailedTask(taskId string, failure int32) error {
+func (s *TriggerScheduler) deleteFailedTask(taskId string, failure int32, post *protocol.Post) error {
 	err := s.taskStore.Delete(&protocol.Delete{taskId})
 	if err != nil {
 		log.Errorf("Failed to delete task data %v\n", taskId)
@@ -707,7 +739,7 @@ func (s *TriggerScheduler) deleteFailedTask(taskId string, failure int32) error 
 	} else {
 		log.Infof("Task %v removed due to too many failure : failure = %v\n", taskId, failure)
 	}
-	return s.moveToHistory(taskId)
+	return s.moveToHistory(taskId, post)
 }
 
 func (s *TriggerScheduler) retryTask(taskId string) error {
@@ -732,7 +764,7 @@ func (s *TriggerScheduler) retryTask(taskId string) error {
 	return nil
 }
 
-func (s *TriggerScheduler) moveToHistory(id string) error {
+func (s *TriggerScheduler) moveToHistory(id string, post *protocol.Post) error {
 	rt, err := s.taskRuntimeStore.GetRuntime(storage.TaskId(id))
 	if err != nil {
 		log.Errorf("Failed to move to history %v\n", err)
@@ -740,7 +772,8 @@ func (s *TriggerScheduler) moveToHistory(id string) error {
 	}
 
 	if rt.State == protocol.TASK_STATE_FINISHED || rt.State == protocol.TASK_STATE_FAILED {
-		_, _, err = s.taskStatStore.SetRuntime(storage.TaskId(id), rt)
+		// append meta data (*Post) to runtime data and move to history
+		_, _, err = s.taskStatStore.SetRuntime(storage.TaskId(id), rt.WithPost(post))
 		if err != nil {
 			log.Errorf("Failed to move to history %v\n", err)
 			return err

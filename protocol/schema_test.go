@@ -1,25 +1,25 @@
 package protocol
 
 import (
-	"testing"
 	"github.com/stretchr/testify/assert"
+	"testing"
 )
 
 func TestSchema(t *testing.T) {
 	post := &Post{
-		StartTime:1000,
-		RepeatPeriod:2000,
-		Cpu:10.0,
-		Mem:20.0,
-		Cmd:"echo test",
+		StartTime:    1000,
+		RepeatPeriod: 2000,
+		Cpu:          10.0,
+		Mem:          20.0,
+		Cmd:          "echo test",
 	}
 
 	bytes, err := ToBytes(post)
 	assert.Equal(t, nil, err)
 
 	update := &Update{
-		TaskId:"update-id",
-		Post : post,
+		TaskId: "update-id",
+		Post:   post,
 	}
 
 	bytes, err = ToBytes(update)
