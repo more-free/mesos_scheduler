@@ -1,14 +1,17 @@
 package scheduler
 
+// TODO support task scale-up / scale-down (faiure-over has already been supported)
 // TODO support repeating tasks
 // TODO support dependency graph
 // TODO support multi-history version. Right now for each task only 1 history version is kept because
 //		history data is stored with the same structure (runtime_store)
-// TODO combine all store structures to a single object
+// TODO combine all store structures to a single object. re-design the interfaces.
 // TODO use protobuf to redefine the schema and replace json encoding/decoding
 // TODO add leader election
-// TODO scalability (task group, scheduler group, etc.)
+// TODO scalability (task group, scheduler group, etc.), this is important because it's a missing feature for
+// current open source frameworks (ex. Marathon could not scale to millions of apps)
 // TODO http component + UI
+// TODO separate APIs from core scheduler logics
 // TODO more tests
 // TODO tutorial, document, etc.
 
@@ -177,8 +180,15 @@ func (s *TriggerScheduler) captureInterrupt() {
 	select {
 	case <-s.quit:
 	case <-ch:
-		log.Infoln("Interruption received. Pre-quit cleanup...")
+		log.Infoln("Interruption received. Pre-quit cleanup for scheduler...")
 		s.Stop()
+
+		// restore the signals for following interruption, works for go 1.5 or above
+		//signal.Reset(os.Interrupt)
+		//signal.Reset(syscall.SIGTERM)
+
+		// for go 1.4 or below
+		signal.Stop(ch)
 	}
 }
 

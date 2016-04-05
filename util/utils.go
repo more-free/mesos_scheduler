@@ -115,3 +115,23 @@ func Cascade(errs ...error) error {
 func NowInMS() int64 {
 	return time.Now().UnixNano() / (int64(time.Millisecond) / int64(time.Nanosecond))
 }
+
+func NowInSec() int64 {
+	return time.Now().Unix()
+}
+
+func WithDefault(p *protocol.Post) *protocol.Post {
+	if p.StartTime == 0 {
+		p.StartTime = NowInSec()
+	}
+
+	if p.MaxRetry < 0 {
+		p.MaxRetry = -1
+	}
+
+	if p.Disk == 0 {
+		p.Disk = 256 // pretty conservative
+	}
+
+	return p
+}

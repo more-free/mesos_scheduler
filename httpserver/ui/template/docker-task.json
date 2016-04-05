@@ -1,0 +1,9 @@
+{
+  "name" : "echo-task-ui-docker",
+  "cpu" : 0.1,
+  "mem" : 16,
+  "cmdtype" : "docker",
+  "cmd" : "/bin/echo",
+  "image": "ubuntu",
+  "args" : ["hello, docker"]
+}

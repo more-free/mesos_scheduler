@@ -1,0 +1,7 @@
+{
+  "name" : "echo-task-ui",
+  "cpu" : 0.1,
+  "mem" : 16,
+  "cmdtype" : "shell",
+  "cmd" : "echo hello,scheduler"
+}
