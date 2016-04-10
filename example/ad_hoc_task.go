@@ -24,7 +24,7 @@ func main() {
 	scheduler.Clear() // Delete all previous tasks. Optional.
 	submitAdHocTasks(scheduler)
 
-	<-time.After(time.Second * 10)
+	<-time.After(time.Second * 20)
 	log.Infoln(scheduler.GetAllStat())
 	scheduler.Stop() // must call this to release resources
 }

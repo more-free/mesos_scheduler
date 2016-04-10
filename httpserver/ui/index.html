@@ -48,13 +48,19 @@
           <thead>
             <tr>
               <th>
-                #
+                Name
               </th>
               <th>
-                Product
+                Type
               </th>
               <th>
-                Payment Taken
+                Cmd
+              </th>
+              <th>
+                Host
+              </th>
+              <th>
+                Ports
               </th>
               <th>
                 Status
@@ -62,76 +68,16 @@
             </tr>
           </thead>
           <tbody>
-            <tr>
-              <td>
-                1
-              </td>
-              <td>
-                TB - Monthly
-              </td>
-              <td>
-                01/04/2012
-              </td>
-              <td>
-                Default
-              </td>
-            </tr>
-            <tr class="active">
-              <td>
-                1
-              </td>
-              <td>
-                TB - Monthly
-              </td>
-              <td>
-                01/04/2012
-              </td>
-              <td>
-                Approved
-              </td>
-            </tr>
+            {{ range $index, $item := . }}
             <tr class="success">
-              <td>
-                2
-              </td>
-              <td>
-                TB - Monthly
-              </td>
-              <td>
-                02/04/2012
-              </td>
-              <td>
-                Declined
-              </td>
+              <td>{{$item.Name}}</td>
+              <td>{{$item.Type}}</td>
+              <td>{{$item.Cmd}}</td>
+              <td>{{$item.Host}}</td>
+              <td>{{$item.Ports}}</td>
+              <td>{{$item.State}}</td>
             </tr>
-            <tr class="warning">
-              <td>
-                3
-              </td>
-              <td>
-                TB - Monthly
-              </td>
-              <td>
-                03/04/2012
-              </td>
-              <td>
-                Pending
-              </td>
-            </tr>
-            <tr class="danger">
-              <td>
-                4
-              </td>
-              <td>
-                TB - Monthly
-              </td>
-              <td>
-                04/04/2012
-              </td>
-              <td>
-                Call in to confirm
-              </td>
-            </tr>
+            {{ end }}
           </tbody>
         </table>
       </div>

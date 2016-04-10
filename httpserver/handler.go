@@ -8,6 +8,7 @@ import (
 	"github.com/more-free/mesos_scheduler/protocol"
 	"github.com/more-free/mesos_scheduler/scheduler"
 	"github.com/more-free/mesos_scheduler/util"
+	"html/template"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -18,13 +19,25 @@ import (
 // TODO http.Handle("/", http.FileServer(http.Dir(s.staticDir)))
 // this cannot be used within virtual box :
 // http://stackoverflow.com/questions/20702221/http-fileserver-caching-files-and-serving-old-versions-after-edit
+// TODO use interface not struct
+
+// show in the UI
+type TaskView struct {
+	Id    string             `json:"id"` // optional. task id.
+	Name  string             `json:"name"`
+	Type  protocol.CmdType   `json:"type"`
+	Cmd   string             `json:"cmd"`
+	Host  string             `json:"host"`
+	Ports []uint32           `json:"ports"`
+	State protocol.TaskState `json:"state"`
+}
 
 // with leader election
 type HASchedulerServer struct {
 	scheduler *scheduler.TriggerScheduler
 	elector   ha.LeaderElection
 	port      int
-	staticDir string
+	staticDir string // root directory of static files
 }
 
 func NewHASchedulerServer(scheduler *scheduler.TriggerScheduler,
@@ -57,9 +70,14 @@ func (s *HASchedulerServer) Start() {
 
 	// this FileServer function cannot be used within virtual box, see discussion here :
 	// http://stackoverflow.com/questions/20702221/http-fileserver-caching-files-and-serving-old-versions-after-edit
-	http.Handle("/", http.FileServer(http.Dir(s.staticDir)))
-	http.HandleFunc("/list", s.ListAll)
+	// also note that back-slash is needed to indicate a subtree rooted as /css/, rather than /
+	// ex. we can have two valid patterns, "/css/" and "/css", they map to different patterns
+	http.Handle("/css/", http.FileServer(http.Dir(s.staticDir)))
+	http.Handle("/js/", http.FileServer(http.Dir(s.staticDir)))
+	http.Handle("/fonts/", http.FileServer(http.Dir(s.staticDir)))
+
 	http.HandleFunc("/create", s.CreateTrigger)
+	http.HandleFunc("/", s.Welcome) // unmatched patterns fall here
 	http.ListenAndServe(fmt.Sprintf(":%d", s.port), nil)
 }
 
@@ -85,8 +103,61 @@ func (s *HASchedulerServer) captureInterrupt() {
 	}
 }
 
-func (s *HASchedulerServer) ListAll(w http.ResponseWriter, r *http.Request) {
+func (s *HASchedulerServer) Welcome(w http.ResponseWriter, r *http.Request) {
+	rts, err := s.scheduler.GetAllStat()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
+	taskViews := s.toTaskView(rts)
+	temp, err := template.ParseFiles(s.staticDir + "/index.html")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	temp.Execute(w, taskViews)
+}
+
+func (s *HASchedulerServer) ListAll(w http.ResponseWriter, r *http.Request) {
+	rts, err := s.scheduler.GetAllStat()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	taskViews := s.toTaskView(rts)
+	bytes, err := json.Marshal(taskViews)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(bytes)
+}
+
+func (s *HASchedulerServer) toTaskView(rts protocol.TaskRunTimeList) []*TaskView {
+	tasks := make([]*TaskView, len(rts))
+	for i := 0; i < len(tasks); i++ {
+		tasks[i] = &TaskView{
+			Name:  rts[i].Post.Name,
+			Type:  rts[i].Post.CmdType,
+			Cmd:   rts[i].Post.Cmd,
+			Host:  rts[i].Host,
+			Ports: s.extractHostPorts(rts[i].PortMapping),
+			State: rts[i].State,
+		}
+	}
+	return tasks
+}
+
+func (s *HASchedulerServer) extractHostPorts(portMapping []*protocol.PortMapping) []uint32 {
+	hostports := make([]uint32, len(portMapping))
+	for i := 0; i < len(hostports); i++ {
+		hostports[i] = portMapping[i].HostPort
+	}
+	return hostports
 }
 
 func (s *HASchedulerServer) CreateTrigger(w http.ResponseWriter, r *http.Request) {

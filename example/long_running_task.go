@@ -24,7 +24,7 @@ func main() {
 	scheduler.Clear() // Delete all previous tasks. Optional.
 	submitLongRunningTasks(scheduler)
 
-	<-time.After(time.Second * 12)
+	<-time.After(time.Second * 12000)
 	log.Infoln(scheduler.GetAllStat())
 	scheduler.Stop() // must call this to release resources
 }

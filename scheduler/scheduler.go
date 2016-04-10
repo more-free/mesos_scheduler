@@ -1,20 +1,5 @@
 package scheduler
 
-// TODO support task scale-up / scale-down (faiure-over has already been supported)
-// TODO support repeating tasks
-// TODO support dependency graph
-// TODO support multi-history version. Right now for each task only 1 history version is kept because
-//		history data is stored with the same structure (runtime_store)
-// TODO combine all store structures to a single object. re-design the interfaces.
-// TODO use protobuf to redefine the schema and replace json encoding/decoding
-// TODO add leader election
-// TODO scalability (task group, scheduler group, etc.), this is important because it's a missing feature for
-// current open source frameworks (ex. Marathon could not scale to millions of apps)
-// TODO http component + UI
-// TODO separate APIs from core scheduler logics
-// TODO more tests
-// TODO tutorial, document, etc.
-
 import (
 	"github.com/gogo/protobuf/proto"
 
@@ -61,7 +46,7 @@ type TriggerScheduler struct {
 type SchedulerConfig struct {
 	StartTimeout   time.Duration // the max duration when a task stays in "STARTING" state
 	CleanTimeout   time.Duration // the max duration after a task finishes or fails. Any state data exceeds
-	HistoryTimeout time.Duration // the max duration for a stat data to exist
+	HistoryTimeout time.Duration // the max duration for a stat data to exist. -1 => never clean
 	User           string        // user name of the framework
 	Name           string        // framework (scheduler) name
 	ZkServers      []string      // zookeeper servers, "host:ip"
@@ -398,10 +383,17 @@ func (s *TriggerScheduler) ResourceOffers(driver sched.SchedulerDriver, offers [
 			// the next time there might be duplicate tasks launched. Instead we always update state first, by doing this, if "launching task"
 			// fails, the states of those tasks remain "STARTING" for a while, until a cronjob clears all STARTING tasks when they exceed
 			// the start timeout.
+
+			// note this may also be a failed-restarting task, so it should not overwrite the Failure field
+			var failure int32
+			if rt, err := s.taskRuntimeStore.GetRuntime(storage.TaskId(t.TaskId)); err == nil {
+				failure = rt.Failure
+			}
+
 			_, _, err := s.taskRuntimeStore.SetRuntime(
 				storage.TaskId(t.TaskId),
 				&protocol.TaskRunTime{
-					Failure:     0,
+					Failure:     failure,
 					State:       protocol.TASK_STATE_STARTING,
 					Host:        *offer.Hostname, // ip
 					PortMapping: t.PortMapping,
@@ -590,6 +582,11 @@ func (s *TriggerScheduler) asMesosDockerTask(task *protocol.Update) *mesos.TaskI
 	// see an example here :  https://github.com/derekchiang/Mesos-Bitcoin-Miner/blob/master/scheduler.go#L147
 	// it is also possible to specify options for "docker run" command, one just needs to set
 	// Container.Docker.Parameters field.
+
+	// test only, remove later TODO
+	envName := "MESOS_TASK_ID"
+	envValue := task.TaskId
+
 	return s.withPort(
 		task.PortMapping,
 		&mesos.TaskInfo{
@@ -607,6 +604,13 @@ func (s *TriggerScheduler) asMesosDockerTask(task *protocol.Update) *mesos.TaskI
 				Shell:     proto.Bool(false),
 				Value:     proto.String(task.Cmd),
 				Arguments: task.Args,
+				Environment: &mesos.Environment{
+					Variables: []*mesos.Environment_Variable{
+						&mesos.Environment_Variable{
+							Name:  &envName,
+							Value: &envValue,
+						},
+					}},
 			},
 			Resources: []*mesos.Resource{
 				util.NewScalarResource("cpus", task.Cpu),
@@ -679,6 +683,7 @@ func (s *TriggerScheduler) setFailed(taskId string) error {
 			LastModifiedMS: s.nowInMS(),
 		},
 	)
+
 	if err != nil {
 		log.Errorf("Failed to update state for task %v, %v\n", taskId, err)
 		return err
@@ -802,20 +807,25 @@ func (s *TriggerScheduler) moveToHistory(id string, post *protocol.Post) error {
 
 // a cron job runs periodically
 func (s *TriggerScheduler) cleanState() {
-	run := func(ch chan<- struct{}, timeout time.Duration, quit <-chan struct{}) {
+	run := func(ch chan<- bool, timeout time.Duration, quit <-chan struct{}) {
+		if timeout < 0 {
+			ch <- true
+			return
+		}
+
 		for {
 			select {
 			case <-quit:
 				return
 			case <-time.After(timeout):
-				ch <- struct{}{}
+				ch <- false
 			}
 		}
 	}
 
-	startChan := make(chan struct{})
-	cleanChan := make(chan struct{})
-	historyChan := make(chan struct{})
+	startChan := make(chan bool)
+	cleanChan := make(chan bool)
+	historyChan := make(chan bool)
 
 	go run(startChan, s.config.StartTimeout, s.cleanStateQuit)
 	go run(cleanChan, s.config.CleanTimeout, s.cleanStateQuit)
@@ -823,15 +833,21 @@ func (s *TriggerScheduler) cleanState() {
 
 	for {
 		select {
-		case <-startChan:
-			go s.scanStartingTasks()
+		case done := <-startChan:
+			if !done {
+				go s.scanStartingTasks()
+			}
 
-		case <-cleanChan:
+		case done := <-cleanChan:
 			// do we really need this ?
-			go s.scanFinishedFailedTasks()
+			if !done {
+				go s.scanFinishedFailedTasks()
+			}
 
-		case <-historyChan:
-			go s.scanHistoryStore()
+		case done := <-historyChan:
+			if !done {
+				go s.scanHistoryStore()
+			}
 
 		case <-s.cleanStateQuit:
 			log.Infoln("State cleaner quit")
@@ -883,7 +899,7 @@ func (s *TriggerScheduler) scanHistoryStore() {
 	ids, _ := s.taskStatStore.GetAllId()
 	for _, id := range ids {
 		rt, err := s.taskStatStore.GetRuntime(id)
-		if err != nil && s.overTimeNow(rt.LastModifiedMS, s.config.HistoryTimeout) {
+		if err == nil && s.overTimeNow(rt.LastModifiedMS, s.config.HistoryTimeout) {
 			err = s.taskStatStore.Delete(id)
 			if err != nil {
 				log.Errorf("Failed to delete task %v from history data store : %v\n", id, err)
